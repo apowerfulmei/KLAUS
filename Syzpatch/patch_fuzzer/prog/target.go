@@ -294,9 +294,6 @@ func MakeProgGen(target *Target) *Builder {
 		ma:     newMemAlloc(target.NumPages * target.PageSize),
 		p: &Prog{
 			Target: target,
-			ProgExtra: ProgExtra{
-				Dist: InvalidDist,
-			},
 		},
 	}
 }

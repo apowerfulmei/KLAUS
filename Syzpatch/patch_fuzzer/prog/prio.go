@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-	"time"
 )
 
 // Calulation of call-to-call priorities.
@@ -220,10 +219,6 @@ type ChoiceTable struct {
 	target *Target
 	runs   [][]int
 	calls  []*Syscall
-
-	GoEnable  bool
-	startTime time.Time
-	CallPairSelector
 }
 
 type Mutateinfo struct {
@@ -290,13 +285,7 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 			run[i][j] = sum
 		}
 	}
-	//return &ChoiceTable{target, run, enabledCalls}
-	return &ChoiceTable{
-		target: target,
-		runs:   run,
-		calls:  enabledCalls,
-		//GoEnable: false,
-	}
+	return &ChoiceTable{target, run, enabledCalls}
 }
 
 func (target *Target) BuildCorpusChoiceTable(corpus []*Prog, corpusSyscall map[string]bool) *ChoiceTable {
@@ -304,18 +293,6 @@ func (target *Target) BuildCorpusChoiceTable(corpus []*Prog, corpusSyscall map[s
 	// the resource relation before the choice table is built, here we do not have
 	// this check which may result in bias on unenabled syscalls. the quick fix rebaise
 	// a enabled syscall.
-
-	// begin for debug
-	// 检查 target 是否为空
-	if target == nil {
-		return nil
-	}
-
-	// 检查 corpus 是否为空
-	if len(corpus) == 0 {
-		return nil
-	}
-	// end for debug
 
 	enabled := make(map[*Syscall]bool)
 

@@ -44,8 +44,3 @@ For other OS kernels check:
 ## Disclaimer
 
 This is not an official Google product.
-
-
-
-## Distance
-improve patch_fuzzer of klaus with distance.

@@ -55,8 +55,6 @@ type RPCServer struct {
 	corpusCover    cover.Cover
 	rotator        *prog.Rotator
 	rnd            *rand.Rand
-	maxDistance    uint32
-	minDistance    uint32
 }
 
 type Fuzzer struct {
@@ -98,8 +96,6 @@ func startRPCServer(mgr *Manager) (int, error) {
 		Relation:              &Relations{-1, -1, nil},
 		RelationSig:           &RelationSigs{false, nil},
 		corpusSyscall:         make(map[string]bool),
-		minDistance:           prog.MaxDist,
-		maxDistance:           0,
 	}
 	serv.batchSize = 5
 	if serv.batchSize < mgr.cfg.Procs {
@@ -358,18 +354,6 @@ func (serv *RPCServer) NewInput(a *rpctype.NewInputArgs, r *int) error {
 	serv.stats.newInputs.inc()
 	if rotated {
 		serv.stats.rotatedInputs.inc()
-	}
-
-	if a.Dist != prog.InvalidDist && a.Dist > serv.maxDistance {
-		serv.maxDistance = a.Dist
-		serv.stats.maxDistance.set(int(a.Dist))
-	}
-	if a.Dist < serv.minDistance {
-		if !genuine {
-			log.Logf(0, "catch prog dist %v (lower than %v), but not genuine", a.Dist, serv.minDistance)
-		}
-		serv.minDistance = a.Dist
-		serv.stats.minDistance.set(int(a.Dist))
 	}
 
 	if genuine || newObj || newSyscall || newPatch || newTrace {

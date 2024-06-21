@@ -649,29 +649,3 @@ const (
 int main() { printf("Hello, World!\n"); }
 `
 )
-
-const (
-	Akaros  = "akaros"
-	FreeBSD = "freebsd"
-	Darwin  = "darwin"
-	Fuchsia = "fuchsia"
-	Linux   = "linux"
-	NetBSD  = "netbsd"
-	OpenBSD = "openbsd"
-	TestOS  = "test"
-	Trusty  = "trusty"
-	Windows = "windows"
-
-	AMD64               = "amd64"
-	ARM64               = "arm64"
-	ARM                 = "arm"
-	I386                = "386"
-	MIPS64LE            = "mips64le"
-	PPC64LE             = "ppc64le"
-	S390x               = "s390x"
-	RiscV64             = "riscv64"
-	TestArch64          = "64"
-	TestArch64Fork      = "64_fork"
-	TestArch32Shmem     = "32_shmem"
-	TestArch32ForkShmem = "32_fork_shmem"
-)

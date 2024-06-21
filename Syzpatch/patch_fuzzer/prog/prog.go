@@ -13,13 +13,6 @@ type Prog struct {
 	Target   *Target
 	Calls    []*Call
 	Comments []string
-	ProgExtra
-}
-
-type ProgExtra struct {
-	Dist  uint32
-	Tcall *Call
-	Rcall *Call
 }
 
 type Call struct {

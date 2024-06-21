@@ -1,8 +1,6 @@
 // Copyright 2018 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-// return all signal if there is any new signal
-
 // Package signal provides types for working with feedback signal.
 package signal
 
@@ -11,8 +9,6 @@ type (
 	prioType int8
 )
 
-// map feeback signal to types, elemType: prioType
-// 此type不是klaus的type coverage的type
 type Signal map[elemType]prioType
 type PatchSig map[uint32]map[uint64]uint32
 type Serial struct {
@@ -107,10 +103,6 @@ func PatchFuzzerFromRaw(Similarity []uint64, HashvarIdx []uint32, Hashvar []uint
 	return variableHashesRes
 
 }
-
-// 传入执行中对awrp的读写操作信息，返回traceSignal
-// prio是call的优先级
-// prioType是执行对某个变量相关的读写操作的次数
 func TraceFromRaw(PreTrace []uint32, EnableTrace []uint32, PostTrace []uint32, prio uint8) Signal {
 	if len(PreTrace) == 0 && len(EnableTrace) == 0 {
 		return nil
@@ -146,7 +138,6 @@ func TraceFromRaw(PreTrace []uint32, EnableTrace []uint32, PostTrace []uint32, p
 	return s
 }
 
-// 沿用grebe的object coverage，代表经过awrp的coverage信息
 func ObjCovFromRaw(raw []uint32, prio uint8) Signal {
 	if len(raw) == 0 {
 		return nil
@@ -167,18 +158,6 @@ func ObjCovFromRaw(raw []uint32, prio uint8) Signal {
 	}
 	return s
 }
-
-// klaus
-// func FromRaw(raw []uint32, prio uint8) Signal {
-// 	if len(raw) == 0 {
-// 		return nil
-// 	}
-// 	s := make(Signal, len(raw))
-// 	for _, e := range raw {
-// 		s[elemType(e)] = prioType(prio)
-// 	}
-// 	return s
-// }
 
 func (s Signal) Serialize() Serial {
 	if s.Empty() {

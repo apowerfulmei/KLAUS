@@ -29,7 +29,6 @@ type randGen struct {
 	target           *Target
 	inCreateResource bool
 	recDepth         map[string]int
-	rcall            *Call
 }
 
 func newRand(target *Target, rs rand.Source) *randGen {
@@ -608,9 +607,6 @@ func (r *randGen) generateParticularCall(s *state, meta *Syscall) (calls []*Call
 func (target *Target) GenerateAllSyzProg(rs rand.Source) *Prog {
 	p := &Prog{
 		Target: target,
-		ProgExtra: ProgExtra{
-			Dist: InvalidDist,
-		},
 	}
 	r := newRand(target, rs)
 	s := newState(target, target.DefaultChoiceTable(), nil)
@@ -638,9 +634,6 @@ func (target *Target) DataMmapProg() *Prog {
 	return &Prog{
 		Target: target,
 		Calls:  target.MakeDataMmap(),
-		ProgExtra: ProgExtra{
-			Dist: InvalidDist,
-		},
 	}
 }
 

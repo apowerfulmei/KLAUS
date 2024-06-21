@@ -108,8 +108,6 @@ static void cover_open(cover_t* cov, bool extra)
 				PROT_READ | PROT_WRITE, MAP_SHARED, cov->fd, 0);
 	if (cov->data == MAP_FAILED)
 		fail("cover mmap failed");
-	cov->dist_area=(uint32*)cov->data;
-	cov->kcov_area=(char*)((uint32*)cov->dist_area + DIST_SIZE);
 	cov->data_end = cov->data + mmap_alloc_size;
 }
 
@@ -164,17 +162,15 @@ static void cover_reset(cover_t* cov)
 			fail("cover_reset: current_cover == 0");
 		cov = current_cover;
 	}
-	*(uint64*)cov->kcov_area = 0;
-	cov->dist_area[0] = 0xffffffff;
+	*(uint64*)cov->data = 0;
 }
 
 static void cover_collect(cover_t* cov)
 {
-	char* area = cov->kcov_area;
 	if (is_kernel_64_bit)
-		cov->size = *(uint64*)area;
+		cov->size = *(uint64*)cov->data;
 	else
-		cov->size = *(uint32*)area;
+		cov->size = *(uint32*)cov->data;
 }
 
 static bool cover_check(uint32 pc)

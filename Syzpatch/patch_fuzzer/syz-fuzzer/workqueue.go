@@ -6,8 +6,6 @@ package main
 import (
 	"sync"
 
-	pq "github.com/emirpasic/gods/queues/priorityqueue"
-	"github.com/emirpasic/gods/utils"
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/prog"
 )
@@ -20,11 +18,9 @@ type WorkQueue struct {
 	mu              sync.RWMutex
 	triageCandidate []*WorkTriage
 	candidate       []*WorkCandidate
-	// triage          []*WorkTriage
-	// smash           []*WorkSmash
-	triage *pq.Queue // 更新为优先队列
-	smash  *pq.Queue // 更新为优先队列
-	seed   []*WorkSeed
+	triage          []*WorkTriage
+	smash           []*WorkSmash
+	seed            []*WorkSeed
 
 	procs          int
 	needCandidates chan struct{}
@@ -81,12 +77,6 @@ func newWorkQueue(procs int, needCandidates chan struct{}) *WorkQueue {
 	return &WorkQueue{
 		procs:          procs,
 		needCandidates: needCandidates,
-		smash: pq.NewWith(func(a, b interface{}) int {
-			return utils.UInt32Comparator(a.(*WorkSmash).p.Dist, b.(*WorkSmash).p.Dist)
-		}),
-		triage: pq.NewWith(func(a, b interface{}) int {
-			return utils.UInt32Comparator(a.(*WorkTriage).info.Dist, b.(*WorkTriage).info.Dist)
-		}),
 	}
 }
 
@@ -98,14 +88,12 @@ func (wq *WorkQueue) enqueue(item interface{}) {
 		if item.flags&ProgCandidate != 0 {
 			wq.triageCandidate = append(wq.triageCandidate, item)
 		} else {
-			//wq.triage = append(wq.triage, item)
-			wq.triage.Enqueue(item)
+			wq.triage = append(wq.triage, item)
 		}
 	case *WorkCandidate:
 		wq.candidate = append(wq.candidate, item)
 	case *WorkSmash:
-		//wq.smash = append(wq.smash, item)
-		wq.smash.Enqueue(item)
+		wq.smash = append(wq.smash, item)
 	case *WorkSeed:
 		wq.seed = append(wq.seed, item)
 	default:
@@ -115,8 +103,7 @@ func (wq *WorkQueue) enqueue(item interface{}) {
 
 func (wq *WorkQueue) dequeue() (item interface{}) {
 	wq.mu.RLock()
-	// if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash)+len(wq.seed) == 0 {
-	if len(wq.triageCandidate)+len(wq.candidate)+wq.triage.Size()+wq.smash.Size()+len(wq.seed) == 0 {
+	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash)+len(wq.seed) == 0 {
 		wq.mu.RUnlock()
 		return nil
 	}
@@ -136,10 +123,14 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 		item = wq.candidate[last]
 		wq.candidate = wq.candidate[:last]
 		wantCandidates = len(wq.candidate) < wq.procs
-	} else if wq.triage.Size() != 0 {
-		item, _ = wq.triage.Dequeue()
-	} else if wq.smash.Size() != 0 {
-		item, _ = wq.smash.Dequeue()
+	} else if len(wq.triage) != 0 {
+		last := len(wq.triage) - 1
+		item = wq.triage[last]
+		wq.triage = wq.triage[:last]
+	} else if len(wq.smash) != 0 {
+		last := len(wq.smash) - 1
+		item = wq.smash[last]
+		wq.smash = wq.smash[:last]
 	}
 	wq.mu.Unlock()
 	if wantCandidates {
