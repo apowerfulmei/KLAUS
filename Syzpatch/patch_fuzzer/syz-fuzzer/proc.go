@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"runtime/debug"
@@ -34,6 +35,8 @@ type Proc struct {
 	execOptsCover     *ipc.ExecOpts
 	execOptsComps     *ipc.ExecOpts
 	execOptsNoCollide *ipc.ExecOpts
+	// syzdirect
+	// execOptsCollide *ipc.ExecOpts
 }
 
 func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
@@ -240,7 +243,7 @@ func (proc *Proc) loop() {
 			execMu.Unlock()
 		} else {
 			// Mutate an existing prog.
-			p := fuzzerSnapshot.chooseProgram(proc.rnd).Clone()
+			p := fuzzerSnapshot.chooseProgram(proc.rnd, proc.fuzzer.choiceTable).Clone()
 			log.Logf(3, "using original mutation")
 			p.Mutate(proc.rnd, prog.RecommendedCalls, ct, fuzzerSnapshot.corpus)
 			log.Logf(1, "#%v: mutated", proc.pid)
@@ -258,6 +261,9 @@ func (proc *Proc) loop() {
 // signal when minimizing.
 func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 	callInfo := item.progInfo.Calls[item.call]
+	progDist := item.p.Dist
+	callDist := item.info.Dist
+
 	inputSignal := proc.fuzzer.getPatchSignal(item.p, item.progInfo, item.call)
 	newSignal := proc.fuzzer.corpusPatchSignalDiff(inputSignal)
 	proc.fuzzer.syncRelationBuildingSeed(item.p.Serialize())
@@ -290,7 +296,7 @@ func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 			}
 			continue
 		}
-		thisSignal, thisCover := getPatchSignalAndCover(item.p, info, item.call)
+		thisSignal, thisCover, thisDist := getPatchSignalAndCover(item.p, info, item.call)
 		newSignal = newSignal.Intersection(thisSignal)
 		// Without !minimized check manager starts losing some considerable amount
 		// of coverage after each restart. Mechanics of this are not completely clear.
@@ -298,6 +304,14 @@ func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 			return false
 		}
 		inputCover.Merge(thisCover)
+
+		if info.MinDist < progDist {
+			progDist = info.MinDist
+		}
+		if thisDist != prog.InvalidDist && thisDist > callDist {
+			callDist = thisDist
+		}
+
 	}
 	if item.flags&ProgMinimized == 0 {
 		item.p, item.call = prog.Minimize(item.p, item.call, false,
@@ -308,14 +322,25 @@ func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 						// The call was not executed or failed.
 						continue
 					}
-					thisSignal, _ := getPatchSignalAndCover(p1, info, call1)
-					if newSignal.Intersection(thisSignal).Len() == newSignal.Len() {
+					thisSignal, _, _ := getPatchSignalAndCover(p1, info, call1)
+					if newSignal.Intersection(thisSignal).Len() == newSignal.Len() && info.MinDist <= progDist {
+
 						return true
 					}
 				}
 				return false
 			})
 	}
+
+	item.p.Dist = progDist
+	// if progDist != prog.InvalidDist {
+	// 	atomic.AddUint64(&proc.fuzzer.extStats[ExtAllDist], uint64(progDist))
+	// 	atomic.AddUint64(&proc.fuzzer.extStats[ExtProgCount], 1)
+	// 	if shouldUpdate && item.p.Tcall != nil {
+	// 		proc.fuzzer.choiceTable.UpdateCallDistance(item.p, callDist)
+	// 	}
+	// }
+
 	data := item.p.Serialize()
 	sig := hash.Hash(data)
 
@@ -327,6 +352,7 @@ func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 		Prog:     data,
 		PatchSig: inputSignal.Serialize(),
 		Cover:    inputCover.Serialize(),
+		Dist:     progDist,
 	})
 
 	//yuhang
@@ -339,6 +365,8 @@ func (proc *Proc) triagePatchInput(item *WorkTriage) bool {
 	return true
 }
 
+// 根据任务的标志来选择不同的处理逻辑。函数首先输出一个日志，记录任务类型和相关信息，然后根据任务的不同标志做出不同的处理
+// WorkTriage是需要进一步判断是否有新覆盖产生的program
 func (proc *Proc) triageInput(item *WorkTriage) {
 	log.Logf(1, "#%v: triaging type=%x", proc.pid, item.flags)
 	patchFuzzerOpt := false
@@ -359,6 +387,10 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 		triageTrace = true
 	}
 	callInfo := item.progInfo.Calls[item.call]
+
+	progDist := item.p.Dist
+	callDist := item.info.Dist
+
 	var inputSignal, newSignal signal.Signal
 
 	if triageObj {
@@ -388,10 +420,14 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 
 	callName := ".extra"
 	logCallName := "extra"
-	if item.call >= 0 {
-		callName = item.p.Calls[item.call].Meta.Name
-		logCallName = fmt.Sprintf("call #%v %v", item.call, callName)
-	}
+	// shouldUpdate := false
+	// if item.call >= 0 {
+	// 	callName = item.p.Calls[item.call].Meta.Name
+	// 	logCallName = fmt.Sprintf("call #%v %v", item.call, callName)
+	// 	if item.p.Calls[item.call] == item.p.Tcall || item.p.Calls[item.call] == item.p.Rcall {
+	// 		shouldUpdate = true
+	// 	}
+	// }
 	if triageObj {
 		callName = item.p.Calls[item.call].Meta.Name
 		logCallName = fmt.Sprintf("call object interaction #%v %v", item.call, callName)
@@ -410,6 +446,7 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 
 		var thisCover []uint32
 		var thisSignal signal.Signal
+		var thisDist uint32
 		// original execution
 		if !reexecutionSuccess(info, &callInfo, item.call) {
 			// The call was not executed or failed.
@@ -419,7 +456,7 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 			}
 			continue
 		}
-		thisSignal, thisCover = getSignalAndCover(item.p, info, item.call)
+		thisSignal, thisCover, thisDist = getSignalAndCover(item.p, info, item.call)
 
 		if triageObj {
 			// item.call is always greater than 0 for triaging object cov.
@@ -437,6 +474,12 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 			return
 		}
 		inputCover.Merge(thisCover)
+		if info.MinDist < progDist {
+			progDist = info.MinDist
+		}
+		if thisDist != prog.InvalidDist && thisDist > callDist {
+			callDist = thisDist
+		}
 	}
 
 	// minimizing prog, while minimizing, we want to keep the cover of object
@@ -453,7 +496,7 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 		objInputSignal = inputSignal
 		newObjSignal = newSignal
 	}
-	
+
 	if !triageTrace {
 		traceInputSingal = proc.fuzzer.getTraceSignal(item.p, item.progInfo, item.call)
 		newTraceSignal = proc.fuzzer.corpusTraceSignalDiff(traceInputSingal)
@@ -490,25 +533,41 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 					thisTraceSignal := proc.fuzzer.getTraceSignal(p1, info, call1)
 					if triageObj {
 						// FIXME: do we need to keep objInputSignal???
-						if newObjSignal.Intersection(thisObjSignal).Len() == newObjSignal.Len() {
-							thisSignal, thisCover := getSignalAndCover(p1, info, call1)
+						if newObjSignal.Intersection(thisObjSignal).Len() == newObjSignal.Len() && info.MinDist <= progDist {
+							thisSignal, thisCover, thisDist := getSignalAndCover(p1, info, call1)
 							var minCov cover.Cover
 							minCov.Merge(thisCover)
 							inputCover = minCov
 							inputSignal = thisSignal
+
+							if info.MinDist < progDist {
+								progDist = info.MinDist
+							}
+							if thisDist != prog.InvalidDist && thisDist > callDist {
+								callDist = thisDist
+							}
+
 							return true
 						}
 					} else if triageTrace {
 						if newTraceSignal.Intersection(thisTraceSignal).Len() == newTraceSignal.Len() {
-							thisSignal, thisCover := getSignalAndCover(p1, info, call1)
+							thisSignal, thisCover, thisDist := getSignalAndCover(p1, info, call1)
 							var minCov cover.Cover
 							minCov.Merge(thisCover)
 							inputCover = minCov
 							inputSignal = thisSignal
+
+							if info.MinDist < progDist {
+								progDist = info.MinDist
+							}
+							if thisDist != prog.InvalidDist && thisDist > callDist {
+								callDist = thisDist
+							}
+
 							return true
 						}
 					} else {
-						thisSignal, thisCover := getSignalAndCover(p1, info, call1)
+						thisSignal, thisCover, thisDist := getSignalAndCover(p1, info, call1)
 						// we want to keep the signal of object when minimizing.
 						if objInputSignal.Intersection(thisObjSignal).Len() == objInputSignal.Len() &&
 							newSignal.Intersection(thisSignal).Len() == newSignal.Len() && thisTraceSignal.Intersection(traceInputSingal).Len() == traceInputSingal.Len() {
@@ -517,6 +576,14 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 							minCov.Merge(thisCover)
 							inputCover = minCov
 							inputSignal = thisSignal
+
+							if info.MinDist < progDist {
+								progDist = info.MinDist
+							}
+							if thisDist != prog.InvalidDist && thisDist > callDist {
+								callDist = thisDist
+							}
+
 							return true
 						}
 					}
@@ -525,8 +592,25 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 			})
 	}
 
+	item.p.Dist = progDist
+	// if progDist != prog.InvalidDist {
+	// 	atomic.AddUint64(&proc.fuzzer.extStats[ExtAllDist], uint64(progDist))
+	// 	atomic.AddUint64(&proc.fuzzer.extStats[ExtProgCount], 1)
+	// 	if shouldUpdate && item.p.Tcall != nil {
+	// 		proc.fuzzer.choiceTable.UpdateCallDistance(item.p, callDist)
+	// 	}
+	// }
+
 	data := item.p.Serialize()
 	sig := hash.Hash(data)
+
+	// tcallId, rcallId := -1, -1
+	// if shouldUpdate && item.p.Tcall != nil {
+	// 	tcallId = item.p.Tcall.Meta.ID
+	// 	if item.p.Rcall != nil {
+	// 		rcallId = item.p.Rcall.Meta.ID
+	// 	}
+	// }
 
 	log.Logf(1, "added new input for %v to corpus:\n%s", logCallName, data)
 	proc.fuzzer.sendInputToManager(rpctype.RPCInput{
@@ -536,6 +620,9 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 		ObjSig:   objInputSignal.Serialize(),
 		TraceSig: traceInputSingal.Serialize(),
 		Cover:    inputCover.Serialize(),
+		Dist:     progDist,
+		// TcallId:  tcallId,
+		// RcallId:  rcallId,
 	})
 
 	proc.fuzzer.addInputToCorpus(item.p, inputSignal, objInputSignal, traceInputSingal, sig)
@@ -560,22 +647,25 @@ func reexecutionSuccess(info *ipc.ProgInfo, oldInfo *ipc.CallInfo, call int) boo
 	return len(info.Extra.Signal) != 0
 }
 
-func getSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.Signal, []uint32) {
+func getSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.Signal, []uint32, uint32) {
 	inf := &info.Extra
 	if call != -1 {
 		inf = &info.Calls[call]
 	}
-	return signal.FromRaw(inf.Signal, signalPrio(p, inf, call)), inf.Cover
+	return signal.FromRaw(inf.Signal, signalPrio(p, inf, call)), inf.Cover, inf.Dist
 }
 
-func getPatchSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.PatchSig, []uint32) {
+func getPatchSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.PatchSig, []uint32, uint32) {
 	inf := &info.Extra
 	if call != -1 {
 		inf = &info.Calls[call]
 	}
-	return signal.PatchFuzzerFromRaw(inf.Similarity, inf.HashvarIdx, inf.Hashvar, signalPrio(p, inf, call)), inf.Cover
+	return signal.PatchFuzzerFromRaw(inf.Similarity, inf.HashvarIdx, inf.Hashvar, signalPrio(p, inf, call)), inf.Cover, inf.Dist
 }
 
+// in order to mutate seed and execute
+// gpt: 根据程序的状态和配置对Input突变
+// hawkeye的power schedule阶段在smashInput里面实现
 func (proc *Proc) smashInput(item *WorkSmash) {
 	if proc.fuzzer.faultInjectionEnabled && item.call != -1 {
 		proc.failCall(item.p, item.call)
@@ -583,11 +673,24 @@ func (proc *Proc) smashInput(item *WorkSmash) {
 	if proc.fuzzer.comparisonTracingEnabled && item.call != -1 {
 		proc.executeHintSeed(item.p, item.call)
 	}
+	maxDist, minDist := proc.fuzzer.readExtremeDist()
+	mutateNum := 100
+	if minDist != prog.InvalidDist && item.p.Dist != prog.InvalidDist {
+		normalized_d := 0.0
+		if maxDist != minDist {
+			normalized_d = float64(maxDist-item.p.Dist) / float64(maxDist-minDist)
+		}
+		power_factor := math.Pow(16, normalized_d)
+		mutateNum = int(power_factor*9.375 + 50.0)
+	}
 	fuzzerSnapshot := proc.fuzzer.snapshot()
-	for i := 0; i < 100; i++ {
+	for i := 0; i < mutateNum; i++ {
 		p := item.p.Clone()
 		p.Mutate(proc.rnd, prog.RecommendedCalls, proc.fuzzer.choiceTable, fuzzerSnapshot.corpus)
+		log.Logf(1, "#%v: smash mutated", proc.pid)
 		proc.execute(proc.execOpts, p, ProgNormal, StatSmash)
+		// syzdirect
+		// proc.executeAndCollide(proc.execOpts, p, ProgNormal, StatSmash)
 	}
 }
 
@@ -691,6 +794,15 @@ func (proc *Proc) execute(execOpts *ipc.ExecOpts, p *prog.Prog, flags ProgTypes,
 	execOpts.Flags |= ipc.FlagCollectCover
 	info := proc.executeRaw(execOpts, p, stat)
 
+	p.Dist = info.MinDist
+	// define in direct.go as const: InvalidDist        uint32 = 0xFFFFFFFF
+	// 如果program的dist不为空，且比MaxDist大，就提示应该更新 MaxDist
+	if p.Dist != prog.InvalidDist && p.Dist > prog.MaxDist {
+		log.Fatalf("prog dist %v higher than max dist %v", p.Dist, prog.MaxDist)
+		panic("max dist should improve")
+	}
+
+	//这个num是？
 	num := proc.fuzzer.getTraceSize(info)
 	if num == 0 {
 		// discard triaging if there is no object covered
@@ -699,11 +811,21 @@ func (proc *Proc) execute(execOpts *ipc.ExecOpts, p *prog.Prog, flags ProgTypes,
 	//log.Logf(3, "We got %v objcov", num)
 	// triage every syscall in the prog if new covs are generated
 	// for syscalls covering new object, we use mark it as object triage.
+
+	// calls, extra := proc.fuzzer.checkNewSignal(p, info)
+	// for _, callIndex := range calls {
+	// 	proc.enqueueCallTriage(p, flags, callIndex, info.Calls[callIndex])
+	// }
+	// if extra {
+	// 	proc.enqueueCallTriage(p, flags, -1, info.Extra)
+	// }
+
 	objCalls, _ := proc.fuzzer.checkNewObjSignal(p, info)
 	traceCalls, _ := proc.fuzzer.checkNewTraceSignal(p, info)
 	patchCalls, _ := proc.fuzzer.checkNewPatchSignal(p, info)
 	for _, callIndex := range objCalls {
 		//log.Logf(1, "test789")
+		//排序
 		log.Logf(1, "enqueuing new objCalls")
 		if len(info.Calls[callIndex].ObjCover) != 0 {
 			proc.enqueueCallTriage(p, flags|ProgTriageObj, callIndex, info)
@@ -726,6 +848,12 @@ func (proc *Proc) execute(execOpts *ipc.ExecOpts, p *prog.Prog, flags ProgTypes,
 			proc.enqueueCallTriage(p, flags, callIndex, info)
 		}
 	}
+
+	proc.fuzzer.callStatsMu.Lock()
+	if p.Tcall != nil {
+		proc.fuzzer.callStats[p.Tcall.Meta.Name] += 1
+	}
+	proc.fuzzer.callStatsMu.Unlock()
 
 	// calls, _ := proc.fuzzer.checkNewSignal(p, info)
 

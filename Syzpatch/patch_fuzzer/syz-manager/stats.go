@@ -32,6 +32,10 @@ type Stats struct {
 	corpusPatchSig   Stat
 	maxSignal        Stat
 
+	//distance内容
+	maxDistance Stat
+	minDistance Stat
+
 	mu         sync.Mutex
 	namedStats map[string]uint64
 	haveHub    bool
@@ -49,6 +53,8 @@ func (stats *Stats) all() map[string]uint64 {
 		"cover":          stats.corpusCover.get(),
 		"signal":         stats.corpusSignal.get(),
 		"max signal":     stats.maxSignal.get(),
+		"max distance":   stats.maxDistance.get(),
+		"min distance":   stats.minDistance.get(),
 	}
 	if stats.haveHub {
 		m["hub: send prog add"] = stats.hubSendProgAdd.get()

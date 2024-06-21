@@ -9,6 +9,7 @@ import (
 	"github.com/google/syzkaller/pkg/host"
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/pkg/signal"
+	"github.com/google/syzkaller/prog"
 )
 
 type RPCInput struct {
@@ -19,6 +20,10 @@ type RPCInput struct {
 	TraceSig signal.Serial
 	PatchSig signal.PatchSerial
 	Cover    []uint32
+
+	TcallId int
+	RcallId int
+	Dist    uint32
 }
 
 type RPCCandidate struct {
@@ -65,6 +70,10 @@ type SyscallReason struct {
 type NewInputArgs struct {
 	Name string
 	RPCInput
+}
+
+type HitCountArgs struct {
+	HitLog prog.GlobalHitLog
 }
 
 type SyncRelationArgs struct {

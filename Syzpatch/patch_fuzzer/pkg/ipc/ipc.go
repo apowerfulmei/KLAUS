@@ -99,11 +99,15 @@ type CallInfo struct {
 	// if dedup == false, then cov effectively contains a trace, otherwise duplicates are removed
 	Comps prog.CompMap // per-call comparison operands
 	Errno int          // call errno (0 if the call was successful)
+
+	Dist uint32
 }
 
 type ProgInfo struct {
-	Calls []CallInfo
-	Extra CallInfo // stores Signal and Cover collected from background threads
+	Calls   []CallInfo
+	Extra   CallInfo // stores Signal and Cover collected from background threads
+	MinDist uint32
+	//prog.ProgHitCounts
 }
 
 type Env struct {
@@ -327,6 +331,7 @@ func addFallbackSignal(p *prog.Prog, info *ProgInfo) {
 	}
 }
 
+// 创建一个ProgInfo结构体实例，并返回
 func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 
 	out := env.out
@@ -334,8 +339,16 @@ func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 	if !ok {
 		return nil, fmt.Errorf("failed to read number of calls")
 	}
-	info := &ProgInfo{Calls: make([]CallInfo, len(p.Calls))}
+	info := &ProgInfo{
+		Calls:   make([]CallInfo, len(p.Calls)),
+		MinDist: prog.InvalidDist,
+	}
 	extraParts := make([]CallInfo, 0)
+
+	for i := 0; i < len(p.Calls); i++ {
+		info.Calls[i].Dist = prog.InvalidDist
+	}
+
 	for i := uint32(0); i < ncmd; i++ {
 		if len(out) < int(unsafe.Sizeof(callReply{})) {
 			return nil, fmt.Errorf("failed to read call %v reply", i)
@@ -360,6 +373,12 @@ func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 			extraParts = append(extraParts, CallInfo{})
 			inf = &extraParts[len(extraParts)-1]
 		}
+
+		inf.Dist = reply.distance
+		if reply.distance < info.MinDist {
+			info.MinDist = reply.distance
+		}
+
 		if inf.Signal, ok = readUint32Array(&out, reply.signalSize); !ok {
 			return nil, fmt.Errorf("call %v/%v/%v: signal overflow: %v/%v",
 				i, reply.index, reply.num, reply.signalSize, len(out))
@@ -424,6 +443,7 @@ func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 		inf.Comps = comps
 	}
 	if len(extraParts) == 0 {
+		info.Extra.Dist = prog.InvalidDist
 		return info, nil
 	}
 	info.Extra = convertExtra(extraParts)
@@ -432,12 +452,17 @@ func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 
 func convertExtra(extraParts []CallInfo) CallInfo {
 	var extra CallInfo
+	minDist := prog.InvalidDist
 	extraCover := make(cover.Cover)
 	extraSignal := make(signal.Signal)
 	for _, part := range extraParts {
 		extraCover.Merge(part.Cover)
 		extraSignal.Merge(signal.FromRaw(part.Signal, 0))
+		if part.Dist < minDist {
+			minDist = part.Dist
+		}
 	}
+	extra.Dist = minDist
 	extra.Cover = extraCover.Serialize()
 	extra.Signal = make([]uint32, len(extraSignal))
 	i := 0
@@ -603,6 +628,8 @@ type callReply struct {
 	signalSize uint32
 	coverSize  uint32
 	compsSize  uint32
+
+	distance uint32
 	// signal/cover/comps follow
 }
 
