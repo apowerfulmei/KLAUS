@@ -131,6 +131,7 @@ static bool flag_devlink_pci;
 static bool flag_vhci_injection;
 
 static bool flag_collect_cover;
+//static bool flag_collect_signal;
 static bool flag_dedup_cover;
 static bool flag_threaded;
 static bool flag_collide;
@@ -190,11 +191,22 @@ struct call_t {
 	syscall_t call;
 };
 
+static const int DIST_SIZE = 10;
+
+// struct cover_t {
+// 	int fd;
+// 	uint32 size;
+// 	char* data;
+// 	char* data_end;
+// };
+
 struct cover_t {
 	int fd;
 	uint32 size;
 	char* data;
 	char* data_end;
+	uint32* dist_area;
+	char* kcov_area;
 };
 
 struct thread_t {
@@ -311,6 +323,8 @@ static void write_call_output(thread_t* th, bool finished);
 static void write_extra_output();
 static void execute_call(thread_t* th);
 static void thread_create(thread_t* th, int id);
+// static void thread_create(thread_t* th, int id, bool need_coverage);
+// static void thread_mmap_cover(thread_t* th);
 static void* worker_thread(void* arg);
 static uint64 read_input(uint64** input_posp, bool peek = false);
 static uint64 read_arg(uint64** input_posp);
@@ -529,6 +543,7 @@ void receive_execute()
 		fail("bad execute prog size 0x%llx", req.prog_size);
 	parse_env_flags(req.env_flags);
 	procid = req.pid;
+	//flag_collect_signal = req.exec_flags & (1 << 0);    //1 << 0?
 	flag_collect_cover = req.exec_flags & (1 << 0);
 	flag_dedup_cover = req.exec_flags & (1 << 1);
 	flag_fault = req.exec_flags & (1 << 2);
@@ -848,7 +863,7 @@ void write_coverage_signal(cover_t* cov, uint32* signal_count_pos, uint32* cover
 {
 	// Write out feedback signals.
 	// Currently it is code edges computed as xor of two subsequent basic block PCs.
-	cover_data_t* cover_data = ((cover_data_t*)cov->data) + 1;
+	cover_data_t* cover_data = ((cover_data_t*)cov->kcov_area+1) ;
 	uint32 nsig = 0;
 	cover_data_t prev = 0;
 	for (uint32 i = 0; i < cov->size; i++) {
@@ -886,6 +901,16 @@ void write_coverage_signal(cover_t* cov, uint32* signal_count_pos, uint32* cover
 		write_output_64(cover_data[i]);
 	}
 	*cover_count_pos = cover_size;
+
+	// //uint32 hit_num = 0;
+	// for (uint32 i = 1; i < DIST_SIZE; i++) {
+	// 	if (cov->dist_area[i] != 0) {
+	// 		write_output(i-1);
+	// 		write_output(cov->dist_area[i]);
+	// 		//hit_num += 2;
+	// 	}
+	// }
+	// //*hit_num_pos = hit_num;
 }
 #endif
 
@@ -968,6 +993,8 @@ void write_call_output(thread_t* th, bool finished)
 	uint32* signal_count_pos = write_output(0); // filled in later
 	uint32* cover_count_pos = write_output(0); // filled in later
 	uint32* comps_count_pos = write_output(0); // filled in later
+	//dist_pos指向cov_dist_area[0]
+	uint32* dist_pos = write_output(0xFFFFFFFF); 
 
 	if (flag_comparisons) {
 		// Collect only the comparisons
@@ -990,6 +1017,8 @@ void write_call_output(thread_t* th, bool finished)
 		// Write out number of comparisons.
 		*comps_count_pos = comps_size;
 	} else if (flag_coverage) {
+		*dist_pos = th->cov.dist_area[0];
+		debug("Get distance %u\n",*dist_pos);
 		if (is_kernel_64_bit)
 			write_coverage_signal<uint64>(&th->cov, signal_count_pos, cover_count_pos);
 		else
@@ -1034,6 +1063,8 @@ void write_extra_output()
 	uint32* signal_count_pos = write_output(0); // filled in later
 	uint32* cover_count_pos = write_output(0); // filled in later
 	write_output(0); // comps_count_pos
+	write_output(extra_cov.dist_area[0]);
+	debug("extra dist %u\n",extra_cov.dist_area[0]);
 	if (is_kernel_64_bit)
 		write_coverage_signal<uint64>(&extra_cov, signal_count_pos, cover_count_pos);
 	else
@@ -1044,6 +1075,7 @@ void write_extra_output()
 	write_completed(completed);
 #endif
 }
+
 
 void thread_create(thread_t* th, int id)
 {
@@ -1056,6 +1088,33 @@ void thread_create(thread_t* th, int id)
 	if (flag_threaded)
 		thread_start(worker_thread, th);
 }
+
+// void thread_create(thread_t* th, int id, bool need_coverage)
+// {
+// 	th->created = true;
+// 	th->id = id;
+// 	th->executing = false;
+// 	// Lazily set up coverage collection.
+// 	// It is assumed that actually it's already initialized - with a few rare exceptions.
+// 	if (need_coverage) {
+// 		if (!th->cov.fd)
+// 			exitf("out of opened kcov threads");
+// 		thread_mmap_cover(th);
+// 	}
+// 	event_init(&th->ready);
+// 	event_init(&th->done);
+// 	event_set(&th->done);
+// 	if (flag_threaded)
+// 		thread_start(worker_thread, th);
+// }
+
+// void thread_mmap_cover(thread_t* th)
+// {
+// 	if (th->cov.data != NULL)
+// 		return;
+// 	cover_mmap(&th->cov);
+// 	cover_protect(&th->cov);
+// }
 
 void* worker_thread(void* arg)
 {

@@ -237,6 +237,9 @@ func (target *Target) Deserialize(data []byte, mode DeserializeMode) (*Prog, err
 func (p *parser) parseProg() (*Prog, error) {
 	prog := &Prog{
 		Target: p.target,
+		ProgExtra: ProgExtra{
+			Dist: InvalidDist,
+		},
 	}
 	for p.Scan() {
 		if p.EOF() {

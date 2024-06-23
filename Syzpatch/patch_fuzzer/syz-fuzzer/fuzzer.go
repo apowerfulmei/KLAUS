@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
@@ -42,7 +43,11 @@ type Fuzzer struct {
 	choiceTable       *prog.ChoiceTable
 	corpusChoiceTable *prog.ChoiceTable
 	stats             [StatCount]uint64
+	// extStats          [ExtStatCount]uint64
+	// callStats         map[string]uint64
+	// callStatsMu       sync.Mutex
 	manager           *rpctype.RPCClient
+	// Target describes target OS/arch pair.
 	target            *prog.Target
 	triagedCandidates uint32
 
@@ -50,12 +55,14 @@ type Fuzzer struct {
 	comparisonTracingEnabled bool
 	spliceEnabled            bool
 
-	corpusMu     sync.RWMutex
-	ctMu         sync.RWMutex
-	corpus       []*prog.Prog
-	corpusHashes map[hash.Sig]struct{}
-	corpusPrios  []int64
-	sumPrios     int64
+	corpusMu sync.RWMutex
+	ctMu     sync.RWMutex
+	// Prog describes syscalls sequence, dist etc
+	corpus        []*prog.Prog
+	corpusHashes  map[hash.Sig]struct{}
+	corpusPrios   []int64
+	sumPrios      int64
+	distanceGroup map[uint32]uint32 // distance -> # program in this distance
 
 	signalMu     sync.RWMutex
 	corpusSignal signal.Signal // signal of inputs in corpus
@@ -83,12 +90,20 @@ type Fuzzer struct {
 	condHashesRes     map[uint32]bool
 
 	logMu sync.Mutex
+
+	distMu      sync.Mutex
+	minDistance uint32
+	maxDistance uint32
+
+	startTime time.Time
+	canLog    bool
 }
 
 type FuzzerSnapshot struct {
-	corpus      []*prog.Prog
-	corpusPrios []int64
-	sumPrios    int64
+	corpus        []*prog.Prog
+	corpusPrios   []int64
+	sumPrios      int64
+	distanceGroup map[uint32]uint32
 }
 
 type Stat int
@@ -117,6 +132,23 @@ var statNames = [StatCount]string{
 }
 
 type OutputType int
+
+// type ExtStat int
+
+// const (
+// 	ExtAllDist ExtStat = iota
+// 	ExtProgCount
+// 	ExtHintCompsCount
+// 	ExtHintCompsSum
+// 	ExtStatCount
+// )
+
+// var extStatNames = [ExtStatCount]string{
+// 	ExtAllDist:        "all dist",
+// 	ExtProgCount:      "prog count",
+// 	ExtHintCompsCount: "hint comps count",
+// 	ExtHintCompsSum:   "hint comps sum",
+// }
 
 const (
 	OutputNone OutputType = iota
@@ -278,6 +310,10 @@ func main() {
 		corpusHashes:             make(map[hash.Sig]struct{}),
 		spliceEnabled:            r.SpliceEnabled,
 		corpusSyscall:            make(map[string]bool),
+		//for distance
+		minDistance:              prog.MaxDist,
+		maxDistance:              0,		
+		distanceGroup:            make(map[uint32]uint32),
 	}
 	gateCallback := fuzzer.useBugFrames(r, *flagProcs)
 	fuzzer.gate = ipc.NewGate(2**flagProcs, gateCallback)
@@ -396,7 +432,7 @@ func (fuzzer *Fuzzer) pollLoop() {
 		if fuzzer.outputType != OutputStdout && time.Since(lastPrint) > 10*time.Second {
 			// Keep-alive for manager.
 			log.Logf(0, "alive, executed %v", execTotal)
-			log.Logf(0, "size of corpus %v, size of corpusSyscall", len(fuzzer.corpus), len(fuzzer.corpusSyscall))
+			//log.Logf(0, "size of corpus %v, size of corpusSyscall", len(fuzzer.corpus), len(fuzzer.corpusSyscall))
 			lastPrint = time.Now()
 		}
 		if poll || time.Since(lastPoll) > 10*time.Second {
@@ -505,9 +541,79 @@ func (fuzzer *Fuzzer) sendInputToManager(inp rpctype.RPCInput) {
 	}
 }
 
+//当有新的program被添加到corups中时，需要根据实际情况，更新fuzzer的语料库中的最大和最小距离
+func (fuzzer *Fuzzer) updateExtremeDist(dist uint32) {
+	if dist != prog.InvalidDist {
+		if fuzzer.minDistance > dist {
+			fuzzer.minDistance = dist
+		}
+		if fuzzer.maxDistance < dist {
+			fuzzer.maxDistance = dist
+		}
+		fuzzer.distanceGroup[dist] += 1
+	}
+}
+
+func (fuzzer *Fuzzer) readExtremeDist() (uint32, uint32) {
+	fuzzer.distMu.Lock()
+	defer fuzzer.distMu.Unlock()
+	return fuzzer.maxDistance, fuzzer.minDistance
+}
+
+// func (fuzzer *Fuzzer) handleHitCount(progHitCounts prog.ProgHitCounts, p *prog.Prog) {
+// 	if len(progHitCounts) == 0 {
+// 		return
+// 	}
+// 	fuzzer.distMu.Lock()
+// 	defer fuzzer.distMu.Unlock()
+// 	var rawProg []byte
+// 	if !fuzzer.canLog {
+// 		fuzzer.canLog = time.Since(fuzzer.startTime) > 20*time.Minute
+// 	}
+// 	for hitIdx, progHitItem := range progHitCounts {
+// 		item, ok := fuzzer.hitLog[hitIdx]
+// 		item.Count += progHitItem.Count
+// 		if !ok && fuzzer.canLog {
+// 			if rawProg == nil {
+// 				rawProg = p.Serialize()
+// 			}
+// 			item.Progs = append(item.Progs, string(rawProg))
+// 			item.HitCalls = append(item.HitCalls, progHitItem.CallIds...)
+// 		}
+// 		fuzzer.hitLog[hitIdx] = item
+// 	}
+
+// }
+
+// // in order to ?
+// func (fuzzer *Fuzzer) sendHitCountToManager() {
+// 	fuzzer.distMu.Lock()
+// 	tmp := make(prog.GlobalHitLog, len(fuzzer.hitLog))
+// 	for hitIdx, item := range fuzzer.hitLog {
+// 		if item.Count != 0 {
+// 			tmp[hitIdx] = item
+// 			item.Count = 0
+// 			item.Progs = nil
+// 			item.HitCalls = nil
+// 			fuzzer.hitLog[hitIdx] = item
+// 		}
+// 	}
+// 	fuzzer.distMu.Unlock()
+// 	if len(tmp) == 0 {
+// 		return
+// 	}
+// 	a := &rpctype.HitCountArgs{
+// 		HitLog: tmp,
+// 	}
+// 	if err := fuzzer.manager.Call("Manager.LogHitCount", a, nil); err != nil {
+// 		log.Fatalf("Manager.NewInput call failed: %v", err)
+// 	}
+// }
+
 func (fuzzer *Fuzzer) addInputFromAnotherFuzzer(inp rpctype.RPCInput) {
 	// FIXME: add lock here
 	// sync the corpus syscall among the fuzzers
+
 	fuzzer.corpusSyscall[inp.Call] = true
 
 	p, fault, faultCall, faultNth := fuzzer.deserializeInput(inp.Prog)
@@ -519,6 +625,7 @@ func (fuzzer *Fuzzer) addInputFromAnotherFuzzer(inp rpctype.RPCInput) {
 	if p == nil {
 		return
 	}
+	p.Dist = inp.Dist
 	sig := hash.Hash(inp.Prog)
 	sign := inp.Signal.Deserialize()
 	// TO-DO-y
@@ -550,6 +657,17 @@ func (fuzzer *Fuzzer) addCandidateInput(candidate rpctype.RPCCandidate) {
 	})
 }
 
+// func (fuzzer *Fuzzer) generateCandidateInputInGo(includedCalls map[int]map[int]bool) {
+// 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+// 	progs := fuzzer.target.MultiGenerateInGo(rnd, fuzzer.choiceTable, includedCalls)
+// 	for _, p := range progs {
+// 		fuzzer.workQueue.enqueue(&WorkCandidate{
+// 			p:     p,
+// 			flags: ProgCandidate,
+// 		})
+// 	}
+// }
+
 func (fuzzer *Fuzzer) deserializeInput(inp []byte) (*prog.Prog, bool, int, int) {
 	p, err := fuzzer.target.Deserialize(inp, prog.NonStrict)
 	fault := false
@@ -576,12 +694,107 @@ func (fuzzer *Fuzzer) deserializeInput(inp []byte) (*prog.Prog, bool, int, int) 
 	return p, fault, faultCall, faultNth
 }
 
-func (fuzzer *FuzzerSnapshot) chooseProgram(r *rand.Rand) *prog.Prog {
-	randVal := r.Int63n(fuzzer.sumPrios + 1)
-	idx := sort.Search(len(fuzzer.corpusPrios), func(i int) bool {
-		return fuzzer.corpusPrios[i] >= randVal
-	})
-	return fuzzer.corpus[idx]
+// // klaus原先的chooseProgram
+// // 根据程序的优先级选择一个程序，并且优先级较高的程序被选中的概率较大，使用了二分搜索算法来实现
+// func (fuzzer *FuzzerSnapshot) chooseProgram(r *rand.Rand) *prog.Prog {
+// 	// sumPrios 是 FuzzerSnapshot 结构体中的一个属性，表示所有程序的优先级之和
+// 	randVal := r.Int63n(fuzzer.sumPrios + 1)
+// 	// 这行代码使用二分搜索算法在已排序的 fuzzer.corpusPrios 中查找第一个大于或等于 randVal 的索引 idx
+// 	idx := sort.Search(len(fuzzer.corpusPrios), func(i int) bool {
+// 		return fuzzer.corpusPrios[i] >= randVal
+// 	})
+// 	return fuzzer.corpus[idx]
+// }
+
+// klaus是根据优先级来选择的，klaus的优先级是根据什么计算的？答：signal的长度，signal-coverage信息。
+// 该函数是结构体FuzzerSnapshot的一个方法函数
+// 作用是根据距离组中的距离和计数来选择一个程序。根据计数的比例，对距离进行加权，然后根据加权后的优先级随机选择一个程序
+func (fuzzer *FuzzerSnapshot) chooseProgram(r *rand.Rand, ct *prog.ChoiceTable) *prog.Prog {
+	// 存储距离组中所有种子被执行的总计数
+	totalCount := uint32(0)
+	// 初始化一个切片 distGroupItems，用于存储距离组中的种子的距离和该种子执行的次数
+	// dist代表种子到target的距离
+	// count代表该种子被选择的次数
+	distGroupItems := make([]struct {
+		dist  uint32
+		count uint32
+	}, 0)
+	// 遍历距离组 fuzzer.distanceGroup
+	for distance, count := range fuzzer.distanceGroup {
+		// 将距离和计数存储到 distGroupItems 中
+		distGroupItems = append(distGroupItems, struct {
+			dist  uint32
+			count uint32
+		}{
+			dist:  distance,
+			count: count,
+		})
+		// 累加计数到 totalCount 中
+		totalCount += count
+	}
+	// 对 distGroupItems 切片中的元素按照距离进行排序
+	sort.Slice(distGroupItems, func(i, j int) bool { return distGroupItems[i].dist < distGroupItems[j].dist })
+
+	//////为计算每个距离的优先级做准备，每个距离的优先级不是单纯取决于距离的大小，还跟种子的执行次数、以及整个distanceGroup相关（计算一个加权，根据该加权决定选择哪一个种子）///////////
+	// 假设distanceGroup所有的种子被执行的总次数等于40，那么threeQuarterCount就等于30
+	// threeQuarterCount：四分之三计数
+	threeQuarterCount := (3 * totalCount / 4)
+	// 初始化为最大无符号整数
+	// 四分之三距离
+	threeQuarterOfDistance := uint32(0xffffffff)
+	// 遍历 distGroupItems 切片，找到第一个计数大于等于threeQuarterCount（总计数的四分之三）的距离，并将其赋值给 threeQuarterOfDistance
+	for _, item := range distGroupItems {
+		if item.count >= threeQuarterCount {
+			threeQuarterOfDistance = item.dist
+			break
+		} else {
+			threeQuarterCount -= item.count
+		}
+	}
+
+	// 初始化总权重为0
+	totalWeight := uint32(0)
+	// 遍历距离组，计算总权重，权重由小于 threeQuarterOfDistance 的距离计算而来
+	for distance := range fuzzer.distanceGroup {
+		if distance < threeQuarterOfDistance {
+			totalWeight += threeQuarterOfDistance - distance
+		}
+	}
+	////////////////////////////////////////////////////////////
+	// 如果 totalWeight 为 0，则随机选择语料库中的一个程序并返回
+	if totalWeight == 0 {
+		randIdx := r.Intn(len(fuzzer.corpus))
+		return fuzzer.corpus[randIdx]
+	}
+	// 初始化 sumPrios 为 0
+	// sumPrios 是 FuzzerSnapshot 结构体中的一个属性，表示所有程序的优先级之和
+	sumPrios := uint32(0)
+	// 创建一个 prioMap切片，用于存储距离和对应的优先级
+	prioMap := make(map[uint32]uint32, len(fuzzer.distanceGroup))
+	// 遍历距离组，计算优先级，并将优先级乘以对应的计数累加到 sumPrios 中，同时将计算的优先级（每个距离的优先级）存储到 prioMap 中
+	// 这里证明优先级不是距离的线性关系，而是经过一个特征处理，即:prio := (threeQuarterOfDistance - distance) * 1000 / totalWeight
+	for distance, count := range fuzzer.distanceGroup {
+		if distance < threeQuarterOfDistance {
+			prio := (threeQuarterOfDistance - distance) * 1000 / totalWeight
+			sumPrios += prio * count
+			prioMap[distance] = prio
+		}
+	}
+	// 生成一个随机值 randVal，范围在 [0, sumPrios) 之间
+	randVal := uint32(r.Int63n(int64(sumPrios)))
+	// 遍历语料库中的程序，根据优先级选择一个程序并返回
+	for _, p := range fuzzer.corpus {
+		if p.Dist < threeQuarterOfDistance {
+			currPrio := prioMap[p.Dist]
+			if currPrio > randVal {
+				return p
+			}
+			randVal -= currPrio
+		}
+	}
+	// 如果在遍历过程中未选择到程序，则输出错误信息并终止程序运行
+	log.Fatalf("select error ??????")
+	return nil
 }
 
 func (fuzzer *Fuzzer) enableCorpusSyscall(p *prog.Prog) {
@@ -592,15 +805,40 @@ func (fuzzer *Fuzzer) enableCorpusSyscall(p *prog.Prog) {
 
 func (fuzzer *Fuzzer) addInputToCorpus(p *prog.Prog, sign signal.Signal, objSig signal.Signal, traceSig signal.Signal, sig hash.Sig) {
 	fuzzer.corpusMu.Lock()
+	fuzzer.updateExtremeDist(p.Dist)
 	if _, ok := fuzzer.corpusHashes[sig]; !ok {
 		fuzzer.corpus = append(fuzzer.corpus, p)
 		fuzzer.corpusHashes[sig] = struct{}{}
-		prio := int64(len(sign))
-		if sign.Empty() {
-			prio = 1
+
+		// dis_klaus from syzdirect
+		//声明变量 prio表示优先级，并将其初始化为整数类型的 1
+		prio := int64(1)
+		//如果 sign 为空或者 p.Dist 等于 prog.InvalidDist，则将 prio 设置为 0
+		if sign.Empty() || p.Dist == prog.InvalidDist {
+			prio = 0
+		} else {
+			// //如果 p.Dist 小于 3450，会根据一定的计算公式重新设置 prio 的值
+			if p.Dist < 3450 {
+				prio += int64(900 * math.Exp(float64(p.Dist)*-0.003))
+			}
 		}
+		// 进一步更新 prio 的值
+		// 如果 sign 不为空且 p.Dist 不等于 prog.InvalidDist，则会根据另一种计算方式重新设置 prio 的值
+		if !sign.Empty() && p.Dist != prog.InvalidDist {
+			prio = int64(prog.MaxDist-p.Dist) * 50
+		}
+		// 将计算得到的 prio 添加到 fuzzer 结构体中的 sumPrios 中，并将 sumPrios 添加到 corpusPrios 切片中
 		fuzzer.sumPrios += prio
 		fuzzer.corpusPrios = append(fuzzer.corpusPrios, fuzzer.sumPrios)
+
+		// klaus
+		// // 根据sign的长度来设置优先级
+		// prio := int64(len(sign))
+		// if sign.Empty() {
+		// 	prio = 1
+		// }
+		// fuzzer.sumPrios += prio
+		// fuzzer.corpusPrios = append(fuzzer.corpusPrios, fuzzer.sumPrios)
 
 		fuzzer.enableCorpusSyscall(p)
 
@@ -660,8 +898,12 @@ func (fuzzer *Fuzzer) patchAddInputToCorpus(p *prog.Prog, sign signal.PatchSig, 
 
 func (fuzzer *Fuzzer) snapshot() FuzzerSnapshot {
 	fuzzer.corpusMu.RLock()
+	tmpGroup := make(map[uint32]uint32, len(fuzzer.distanceGroup))
+	for distance, count := range fuzzer.distanceGroup {
+		tmpGroup[distance] = count
+	}
 	defer fuzzer.corpusMu.RUnlock()
-	return FuzzerSnapshot{fuzzer.corpus, fuzzer.corpusPrios, fuzzer.sumPrios}
+	return FuzzerSnapshot{fuzzer.corpus, fuzzer.corpusPrios, fuzzer.sumPrios, tmpGroup}
 }
 
 func (fuzzer *Fuzzer) addMaxSignal(sign signal.Signal) {
@@ -706,7 +948,7 @@ func (fuzzer *Fuzzer) setRel(info *ipc.ProgInfo, callandargs []map[int]int) int 
 			//first 32 bit is the hash value, last 32 bits are the index
 			index := uint32(info.Calls[i].HashvarIdx[j])
 			hash_value := uint64(info.Calls[i].Hashvar[j])
-			log.Logf(0, "index: %lx, hash_value: %lx", index, hash_value)
+			//log.Logf(0, "index: %lx, hash_value: %lx", index, hash_value)
 			// judge if index is the key of fuzzer.variableHashes
 			if _, ok := fuzzer.variableHashes[index]; ok {
 				log.Logf(0, "\n\n*****variableHasheslist: %v *****\n\n", fuzzer.variableHashes)
@@ -783,6 +1025,7 @@ func (fuzzer *Fuzzer) getObjSignal(p *prog.Prog, info *ipc.ProgInfo, call int) s
 
 func (fuzzer *Fuzzer) getTraceSignal(p *prog.Prog, info *ipc.ProgInfo, call int) signal.Signal {
 	inf := &info.Calls[call]
+	// 设置call的优先级
 	prio := signalPrio(p, inf, call)
 	return signal.TraceFromRaw(inf.PreTrace, inf.EnableTrace, inf.PostTrace, prio)
 }
@@ -942,13 +1185,16 @@ func (fuzzer *Fuzzer) getPatchFuzzerSig(p *prog.Prog, info *ipc.CallInfo, call i
 }
 
 func signalPrio(p *prog.Prog, info *ipc.CallInfo, call int) (prio uint8) {
+	//  如果call不是-1且info.Errno等于0，表示该调用执行成功
 	if call == -1 {
 		return 0
 	}
 	if info.Errno == 0 {
+		// 设置prio的第2个二进制位为1，即prio=2
 		prio |= 1 << 1
 	}
 	if !p.Target.CallContainsAny(p.Calls[call]) {
+		// prio=1
 		prio |= 1 << 0
 	}
 	return

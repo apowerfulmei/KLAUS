@@ -18,6 +18,7 @@ type Syscall struct {
 	Args        []Field
 	Ret         Type
 	Attrs       SyscallAttrs
+	//Module      string
 
 	inputResources  []*ResourceDesc
 	outputResources []*ResourceDesc
@@ -656,6 +657,7 @@ type TypeCtx struct {
 	Meta *Syscall
 	Dir  Dir
 	Ptr  *Type
+	//Stop bool // If set by the callback, subtypes of this type are not visited.
 }
 
 func ForeachType(syscalls []*Syscall, f func(t Type, ctx TypeCtx)) {

@@ -219,6 +219,7 @@ type ChoiceTable struct {
 	target *Target
 	runs   [][]int
 	calls  []*Syscall
+
 }
 
 type Mutateinfo struct {
@@ -244,9 +245,12 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 		}
 	}
 	for call := range enabled {
+		//这里的call可能是个nil
 		if call.Attrs.Disabled {
+			fmt.Printf("I go to here\n")
 			delete(enabled, call)
 		}
+
 	}
 	var enabledCalls []*Syscall
 	for c := range enabled {
@@ -286,6 +290,7 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 		}
 	}
 	return &ChoiceTable{target, run, enabledCalls}
+
 }
 
 func (target *Target) BuildCorpusChoiceTable(corpus []*Prog, corpusSyscall map[string]bool) *ChoiceTable {
@@ -293,6 +298,9 @@ func (target *Target) BuildCorpusChoiceTable(corpus []*Prog, corpusSyscall map[s
 	// the resource relation before the choice table is built, here we do not have
 	// this check which may result in bias on unenabled syscalls. the quick fix rebaise
 	// a enabled syscall.
+
+	// begin for debug
+
 
 	enabled := make(map[*Syscall]bool)
 
@@ -302,6 +310,7 @@ func (target *Target) BuildCorpusChoiceTable(corpus []*Prog, corpusSyscall map[s
 		}
 	}
 	for callName := range corpusSyscall {
+
 		enabled[target.SyscallMap[callName]] = true
 	}
 

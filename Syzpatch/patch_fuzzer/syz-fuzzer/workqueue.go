@@ -5,7 +5,6 @@ package main
 
 import (
 	"sync"
-
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/prog"
 )
@@ -20,7 +19,10 @@ type WorkQueue struct {
 	candidate       []*WorkCandidate
 	triage          []*WorkTriage
 	smash           []*WorkSmash
-	seed            []*WorkSeed
+	// mei remove
+	// triage *pq.Queue // 更新为优先队列
+	// smash  *pq.Queue // 更新为优先队列
+	seed   []*WorkSeed
 
 	procs          int
 	needCandidates chan struct{}
@@ -77,6 +79,12 @@ func newWorkQueue(procs int, needCandidates chan struct{}) *WorkQueue {
 	return &WorkQueue{
 		procs:          procs,
 		needCandidates: needCandidates,
+		// smash: pq.NewWith(func(a, b interface{}) int {
+		// 	return utils.UInt32Comparator(a.(*WorkSmash).p.Dist, b.(*WorkSmash).p.Dist)
+		// }),
+		// triage: pq.NewWith(func(a, b interface{}) int {
+		// 	return utils.UInt32Comparator(a.(*WorkTriage).info.Dist, b.(*WorkTriage).info.Dist)
+		// }),
 	}
 }
 
@@ -89,11 +97,13 @@ func (wq *WorkQueue) enqueue(item interface{}) {
 			wq.triageCandidate = append(wq.triageCandidate, item)
 		} else {
 			wq.triage = append(wq.triage, item)
+			//wq.triage.Enqueue(item)
 		}
 	case *WorkCandidate:
 		wq.candidate = append(wq.candidate, item)
 	case *WorkSmash:
 		wq.smash = append(wq.smash, item)
+		//wq.smash.Enqueue(item)
 	case *WorkSeed:
 		wq.seed = append(wq.seed, item)
 	default:
@@ -104,6 +114,7 @@ func (wq *WorkQueue) enqueue(item interface{}) {
 func (wq *WorkQueue) dequeue() (item interface{}) {
 	wq.mu.RLock()
 	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash)+len(wq.seed) == 0 {
+	// if len(wq.triageCandidate)+len(wq.candidate)+wq.triage.Size()+wq.smash.Size()+len(wq.seed) == 0 {
 		wq.mu.RUnlock()
 		return nil
 	}

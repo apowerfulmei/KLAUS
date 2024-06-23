@@ -9,10 +9,23 @@ import (
 	"github.com/google/syzkaller/pkg/log"
 )
 
+
+const (
+	InvalidDist        uint32 = 0xFFFFFFFF
+	MaxDist            uint32 = 30000
+	CallPairInitNum    int    = 20
+	CallPairLimitMulti uint32 = 2
+)
+
 type Prog struct {
 	Target   *Target
 	Calls    []*Call
 	Comments []string
+	ProgExtra
+}
+
+type ProgExtra struct {
+	Dist  uint32
 }
 
 type Call struct {

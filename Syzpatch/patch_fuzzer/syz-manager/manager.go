@@ -239,12 +239,15 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
 			corpusTraceSig := mgr.stats.corpusTraceSig.get()
 			corpusPatchSig := mgr.stats.corpusPatchSig.get()
 			maxSignal := mgr.stats.maxSignal.get()
+			minDistance := mgr.stats.minDistance.get()
+			maxDistance := mgr.stats.maxDistance.get()
 			mgr.mu.Unlock()
 			numReproducing := atomic.LoadUint32(&mgr.numReproducing)
 			numFuzzing := atomic.LoadUint32(&mgr.numFuzzing)
 
-			log.Logf(0, "VMs %v, executed %v, corpus cover %v, patch sig %v,corpus signal %v, object signal %v, trace signal %v,max signal %v, crashes %v, repro %v",
-				numFuzzing, executed, corpusCover, corpusPatchSig, corpusSignal, corpusObjSig, corpusTraceSig, maxSignal, crashes, numReproducing)
+
+			log.Logf(0, "VMs %v, executed %v, corpus cover %v, patch sig %v,corpus signal %v, object signal %v, trace signal %v, minDistance %v, maxDistance %v, max signal %v, crashes %v, repro %v",
+				numFuzzing, executed, corpusCover, corpusPatchSig, corpusSignal, corpusObjSig, corpusTraceSig, minDistance, maxDistance, maxSignal, crashes, numReproducing)
 		}
 	}()
 

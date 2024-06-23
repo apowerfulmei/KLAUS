@@ -12,6 +12,9 @@ import (
 func (target *Target) Generate(rs rand.Source, ncalls int, ct *ChoiceTable) *Prog {
 	p := &Prog{
 		Target: target,
+		ProgExtra: ProgExtra{
+			Dist: InvalidDist,
+		},
 	}
 	r := newRand(target, rs)
 	s := newState(target, ct, nil)
@@ -33,3 +36,75 @@ func (target *Target) Generate(rs rand.Source, ncalls int, ct *ChoiceTable) *Pro
 	p.debugValidate()
 	return p
 }
+
+// func (target *Target) generateHelper(ct *ChoiceTable, rs rand.Source, ncalls, tcallId, rcallId int) *Prog {
+// 	var rcall *Call
+// 	s := newState(target, ct, nil)
+// 	r := newRand(target, rs)
+// 	p := &Prog{
+// 		Target: target,
+// 		ProgExtra: ProgExtra{
+// 			Dist: InvalidDist,
+// 		},
+// 	}
+
+// 	if rcallId != -1 {
+// 		rcalls := r.generateParticularCall(s, target.Syscalls[rcallId])
+// 		for _, c := range rcalls {
+// 			s.analyze(c)
+// 			p.Calls = append(p.Calls, c)
+// 		}
+// 		rcall = rcalls[len(rcalls)-1]
+// 	}
+
+// 	for len(p.Calls) < ncalls-1 {
+// 		calls := r.generateCall(s, p, len(p.Calls))
+// 		for _, c := range calls {
+// 			s.analyze(c)
+// 			p.Calls = append(p.Calls, c)
+// 		}
+// 	}
+
+// 	r.rcall = rcall
+// 	targetCalls := r.generateParticularCall(s, r.target.Syscalls[tcallId])
+// 	p.Rcall = rcall
+// 	p.Tcall = targetCalls[len(targetCalls)-1]
+
+// 	rmIdx := len(p.Calls) - 1
+// 	if rmIdx < 0 {
+// 		rmIdx = 0
+// 	}
+// 	p.Calls = append(p.Calls, targetCalls...)
+// 	for len(p.Calls) > ncalls {
+// 		//isSucc := p.RemoveCall(rmIdx)
+// 		p.RemoveCall(rmIdx)
+// 		//if !isSucc && rmIdx == 0 {
+// 		if rmIdx == 0 {
+// 			rmIdx = 1
+// 		} else if rmIdx > 0 {
+// 			rmIdx--
+// 		}
+// 	}
+// 	return p
+// }
+
+// func (target *Target) MultiGenerateInGo(rs rand.Source, ct *ChoiceTable, includedCalls map[int]map[int]bool) []*Prog {
+// 	progs := make([]*Prog, 0, len(ct.callPairInfos)*CallPairInitNum)
+// 	for i := 0; i < CallPairInitNum; i++ {
+// 		for j := 0; j < len(ct.callPairInfos); j++ {
+// 			inf := &ct.callPairInfos[j]
+// 			if len(ct.infoIdxMap[inf.Tcall]) > 1 && inf.Rcall == -1 {
+// 				continue
+// 			}
+// 			if rcallMap, ok := includedCalls[inf.Tcall]; ok && (inf.Rcall == -1 || rcallMap[inf.Rcall]) {
+// 				continue
+// 			}
+// 			ncalls := 2
+// 			if inf.Rcall == -1 {
+// 				ncalls = 1
+// 			}
+// 			progs = append(progs, target.generateHelper(ct, rs, ncalls, inf.Tcall, inf.Rcall))
+// 		}
+// 	}
+// 	return progs
+// }
